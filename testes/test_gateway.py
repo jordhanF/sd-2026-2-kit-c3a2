@@ -168,3 +168,24 @@ def test_erro_carrega_o_id_do_rastro(cliente, ambiente, monkeypatch):
     # trace_id so existe quando ha rastreamento configurado no processo; o
     # contrato testado aqui e o corpo do erro sempre trazer o motivo.
     assert "indisponivel" in corpo["detail"]
+
+
+def test_raiz_responde_pagina_legivel_por_gente(cliente):
+    """Abrir a URL no navegador nao pode parecer sistema quebrado.
+
+    Sem rota em "/", o FastAPI devolve {"detail":"Not Found"} - tecnicamente
+    correto e pessimo como primeira impressao para quem so colou o endereco.
+    """
+    resposta = cliente.get("/")
+    assert resposta.status_code == 200
+    assert resposta.headers["content-type"].startswith("text/html")
+    corpo = resposta.text
+    assert "/docs" in corpo and "/saude" in corpo
+    assert "POST /perguntar" in corpo
+
+
+def test_raiz_nao_polui_a_especificacao_openapi(cliente):
+    """A pagina e para gente; o contrato da API continua so com as rotas reais."""
+    caminhos = cliente.get("/openapi.json").json()["paths"]
+    assert "/" not in caminhos
+    assert "/perguntar" in caminhos

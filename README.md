@@ -103,6 +103,13 @@ estados: na_fila → processando → pronto     |     retentando → erro
 
 ## Usar a plataforma publicada
 
+**Pelo navegador**, sem instalar nada: <https://168-75-70-16.sslip.io/docs> abre a
+documentação interativa (OpenAPI). Clique em **Authorize**, informe o token obtido em
+`POST /login` e dispare qualquer rota ali mesmo. A raiz
+(<https://168-75-70-16.sslip.io>) lista as rotas, e `/saude` mostra a plataforma inteira.
+
+**Pelo terminal:**
+
 ```bash
 API=https://168-75-70-16.sslip.io
 
@@ -171,7 +178,7 @@ e monta a resposta a partir dos trechos recuperados. Nenhuma chamada sai da máq
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest testes -q          # 80 testes, sem servidor e sem Redis de pé
+python -m pytest testes -q          # 82 testes, sem servidor e sem Redis de pé
 ```
 
 ---
@@ -470,7 +477,7 @@ Recuperação, inferência e gateway não tocam o disco — falam HTTP.
 │   ├── fila.py       fila, trava de escritor único e descarte
 │   ├── repositorio.py  persistência atômica do índice
 │   └── ...           ranking, retentativa, disjuntor, avaliação, log
-├── testes/           80 testes, offline, sem servidor
+├── testes/           82 testes, offline, sem servidor
 ├── deploy/           instruções de publicação e vhost do nginx
 ├── documentos/       base de teste
 └── docker-compose.yml

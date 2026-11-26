@@ -17,7 +17,7 @@ import time
 
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from comum import ambiente  # noqa: F401  carrega o .env primeiro
@@ -39,6 +39,8 @@ tracing.instrumentar_fastapi(app)
 URL_INGESTAO = os.getenv("URL_INGESTAO", "http://127.0.0.1:8001")
 URL_INFERENCIA = os.getenv("URL_INFERENCIA", "http://127.0.0.1:8003")
 TIMEOUT = float(os.getenv("TIMEOUT_INTERNO", "15"))
+REPOSITORIO = os.getenv(
+    "URL_REPOSITORIO", "https://github.com/jordhanF/sd-2026-2-kit-c3a2")
 
 # Um disjuntor POR DESTINO. Com um contador unico, a inferencia fora do ar
 # cortaria tambem a indexacao, que esta saudavel - falhas diferentes precisam
@@ -150,6 +152,73 @@ def login(credenciais: Credenciais, request: Request):
     token, expira_em = autenticacao.emitir(credenciais.usuario)
     logger.info("login aceito: %s", credenciais.usuario)
     return {"token": token, "tipo": "Bearer", "expira_em_segundos": expira_em}
+
+
+PAGINA_INICIAL = """<!doctype html>
+<html lang="pt-br"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Plataforma de IA como Servico</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.6 system-ui, sans-serif; max-width: 46rem; margin: 0 auto;
+         padding: 3rem 1.25rem; }
+  h1 { font-size: 1.6rem; margin-bottom: .25rem; }
+  p.sub { margin-top: 0; opacity: .75; }
+  code, pre { font-family: ui-monospace, monospace; font-size: .875rem; }
+  pre { padding: 1rem; border-radius: .5rem; overflow-x: auto;
+        background: color-mix(in srgb, currentColor 8%%, transparent); }
+  a.botao { display: inline-block; margin: .25rem .5rem .25rem 0; padding: .5rem .9rem;
+            border-radius: .5rem; text-decoration: none;
+            background: color-mix(in srgb, currentColor 12%%, transparent);
+            color: inherit; }
+  table { border-collapse: collapse; width: 100%%; margin: 1rem 0; }
+  td, th { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid
+           color-mix(in srgb, currentColor 15%%, transparent); }
+  footer { margin-top: 2.5rem; opacity: .7; font-size: .875rem; }
+</style>
+<h1>Plataforma de IA como Servico</h1>
+<p class="sub">C3.A2 &middot; Sistemas Distribuidos e Computacao em Nuvem &middot; FAESA 2026/2</p>
+
+<p>Perguntas e respostas sobre documentos proprios (RAG), servidas por sete processos em
+containers: gateway, inferencia, recuperacao, ingestao, worker de fila, Redis e coletor de
+rastros.</p>
+
+<p>
+  <a class="botao" href="/docs">Documentacao interativa (testar aqui)</a>
+  <a class="botao" href="/saude">Saude da plataforma</a>
+  <a class="botao" href="%(repo)s">Codigo no GitHub</a>
+</p>
+
+<h2>Rotas</h2>
+<table>
+  <tr><th>Rota</th><th>O que faz</th><th>Token</th></tr>
+  <tr><td><code>POST /login</code></td><td>emite o JWT</td><td>nao</td></tr>
+  <tr><td><code>GET /saude</code></td><td>saude da plataforma inteira</td><td>nao</td></tr>
+  <tr><td><code>POST /perguntar</code></td><td>resposta fundamentada nos documentos</td><td>sim</td></tr>
+  <tr><td><code>POST /indexar</code></td><td>enfileira documentos (202)</td><td>sim</td></tr>
+  <tr><td><code>GET /tarefa/{id}</code></td><td>andamento da indexacao</td><td>sim</td></tr>
+  <tr><td><code>GET /quota</code></td><td>quanto resta da cota</td><td>sim</td></tr>
+</table>
+
+<h2>Em dois comandos</h2>
+<pre>TOKEN=$(curl -s -X POST %(url)s/login -H "Content-Type: application/json"   -d '{"usuario":"SEU-USUARIO","senha":"SUA-SENHA"}' | jq -r .token)
+
+curl -s -X POST %(url)s/perguntar -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json" -d '{"pergunta":"o que diz o teorema CAP?"}'</pre>
+
+<footer>Sem token, as rotas de uso respondem 401 &mdash; e proposital.</footer>
+</html>"""
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def inicio(request: Request):
+    """Porta de entrada legivel por gente.
+
+    Sem esta rota, abrir a URL da plataforma no navegador devolve
+    {"detail":"Not Found"} - tecnicamente correto e pessimo como primeira
+    impressao: quem abre nao tem como saber se o sistema esta no ar ou quebrado.
+    """
+    base = str(request.base_url).rstrip("/")
+    return PAGINA_INICIAL % {"url": base, "repo": REPOSITORIO}
 
 
 @app.get("/saude")
