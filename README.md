@@ -159,8 +159,8 @@ PBKDF2** dela — nem o repositório nem o servidor guardam a senha em claro.
 
 ## Roteiro de avaliação
 
-Cada item do edital pode ser verificado em poucos minutos, sem instalar nada além de um
-navegador.
+Cada item do edital pode ser verificado em poucos minutos — pelo navegador, pelo Postman
+ou pela linha de comando.
 
 > **Credenciais de demonstração:** usuário `avaliador`, senha no topo deste README (bloco
 > "No ar em"). São credenciais de avaliação, com cota de 30 requisições por minuto; os
@@ -187,7 +187,17 @@ Abra <https://168-75-70-16.sslip.io/docs> — documentação interativa OpenAPI.
 | h | repita `POST /perguntar` umas 31 vezes | **429** com cabeçalho `Retry-After` — o limite por cliente funciona |
 | i | `GET /saude` (não precisa de token) | saúde dos serviços internos e estado dos dois disjuntores |
 
-### 3. Verificação automática de ponta a ponta
+### 3. Pelo Postman (coleção pronta)
+
+`exemplos/plataforma-ia.postman_collection.json` — **File → Import** no Postman e pronto.
+As credenciais já vêm preenchidas e o login guarda o token sozinho, então as demais
+requisições já saem autenticadas.
+
+Use **Run collection** para disparar as oito de uma vez: cada uma tem verificação embutida
+(401 sem token, 202 na indexação, fontes citadas na resposta, `trace_id` presente). Para
+apontar para uma instância local, troque a variável `baseUrl` para `http://127.0.0.1:8000`.
+
+### 4. Verificação automática de ponta a ponta
 
 Exercita as nove etapas acima em sequência e falha com código diferente de zero se alguma
 quebrar:
@@ -215,7 +225,7 @@ Saída esperada:
 FLUXO COMPLETO OK
 ```
 
-### 4. Resiliência — ver o disjuntor abrir
+### 5. Resiliência — ver o disjuntor abrir
 
 Na máquina publicada, derrubando um serviço interno:
 
@@ -228,7 +238,7 @@ circuito; da quarta em diante a recusa é imediata (~42 ms) e o corpo do 503 pas
 `disjuntor aberto`. Passada a janela de 20 s com o serviço de volta, uma chamada de teste
 fecha o circuito. Os números estão em [Medições](#medições).
 
-### 5. Observabilidade — ver o rastro atravessar a fila
+### 6. Observabilidade — ver o rastro atravessar a fila
 
 ```bash
 ssh -L 16686:127.0.0.1:16686 ubuntu@168.75.70.16
@@ -239,13 +249,13 @@ No trace aparecem, sob o **mesmo `trace_id`**: o gateway contando a cota (`INCRB
 ingestão publicando na fila (`RPUSH`) e o **worker** processando — em outro container e
 segundos depois. A interface não é pública de propósito; o acesso é por túnel SSH.
 
-### 6. Reprodutibilidade — subir do zero na sua máquina
+### 7. Reprodutibilidade — subir do zero na sua máquina
 
 Os três comandos da seção seguinte. Sem chave de LLM, a plataforma roda offline em modo
 simulado. Foi assim que a entrega foi validada: clone limpo numa máquina que nunca tinha
 visto o código, um comando, e o verificador do passo 3 passando.
 
-### 7. A suíte
+### 8. A suíte
 
 ```bash
 pip install -r requirements-dev.txt
@@ -584,7 +594,7 @@ Recuperação, inferência e gateway não tocam o disco — falam HTTP.
 │   ├── fila.py       fila, trava de escritor único e descarte
 │   ├── repositorio.py  persistência atômica do índice
 │   └── ...           ranking, retentativa, disjuntor, avaliação, log
-├── exemplos/         fluxo_completo.py: verificação de ponta a ponta
+├── exemplos/         fluxo_completo.py + coleção do Postman
 ├── testes/           82 testes, offline, sem servidor
 ├── deploy/           instruções de publicação e vhost do nginx
 ├── documentos/       base de teste

@@ -1,0 +1,247 @@
+{
+  "info": {
+    "name": "C3.A2 - Plataforma de IA como Servico",
+    "description": "Colecao de avaliacao da plataforma publicada em https://168-75-70-16.sslip.io\n\nCOMO USAR\n1. Importe este arquivo no Postman (File > Import).\n2. Rode a requisicao '1. login' - ela guarda o token sozinha na variavel {{token}}.\n3. Rode as demais na ordem, ou use Run collection para disparar todas.\n\nCredenciais de avaliacao ja preenchidas: avaliador / avaliacao-c3a2\nPara apontar para uma instancia local, troque a variavel baseUrl para http://127.0.0.1:8000",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://168-75-70-16.sslip.io" },
+    { "key": "usuario", "value": "avaliador" },
+    { "key": "senha", "value": "avaliacao-c3a2" },
+    { "key": "token", "value": "" },
+    { "key": "tarefa_id", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "0. perguntar SEM token (espera 401)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('401: o gateway fecha a porta sem token', function () {",
+              "    pm.response.to.have.status(401);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"pergunta\": \"o que diz o teorema CAP?\"\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/perguntar", "host": ["{{baseUrl}}"], "path": ["perguntar"] },
+        "description": "Prova a TAREFA 1: rota protegida recusa quem nao se identificou."
+      }
+    },
+    {
+      "name": "1. login (guarda o token)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('login devolve 200', function () { pm.response.to.have.status(200); });",
+              "const corpo = pm.response.json();",
+              "pm.collectionVariables.set('token', corpo.token);",
+              "pm.test('token foi emitido', function () {",
+              "    pm.expect(corpo.token).to.be.a('string').and.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"usuario\": \"{{usuario}}\",\n  \"senha\": \"{{senha}}\"\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/login", "host": ["{{baseUrl}}"], "path": ["login"] },
+        "description": "Emite o JWT e guarda em {{token}}. As demais requisicoes ja o usam."
+      }
+    },
+    {
+      "name": "2. login com senha errada (espera 401)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('senha errada e recusada', function () { pm.response.to.have.status(401); });",
+              "pm.test('nao revela qual campo errou', function () {",
+              "    pm.expect(pm.response.json().detail).to.include('usuario ou senha');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"usuario\": \"{{usuario}}\",\n  \"senha\": \"senha-errada\"\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/login", "host": ["{{baseUrl}}"], "path": ["login"] },
+        "description": "A mensagem e a mesma para usuario inexistente e senha errada: dizer qual dos dois errou entrega metade da credencial."
+      }
+    },
+    {
+      "name": "3. indexar documentos (espera 202)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('202: aceito, ainda nao processado', function () {",
+              "    pm.response.to.have.status(202);",
+              "});",
+              "const corpo = pm.response.json();",
+              "pm.collectionVariables.set('tarefa_id', corpo.id);",
+              "pm.test('devolve comprovante com id da tarefa', function () {",
+              "    pm.expect(corpo.id).to.be.a('string').and.not.empty;",
+              "    pm.expect(corpo.status).to.eql('na_fila');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "[\n  {\n    \"texto\": \"O teorema CAP afirma que, diante de uma particao de rede, um sistema distribuido precisa escolher entre consistencia e disponibilidade.\",\n    \"origem\": \"teorema_cap.txt\"\n  },\n  {\n    \"texto\": \"Raft e um algoritmo de consenso baseado em eleicao de lider e log replicado. Uma operacao e confirmada quando a maioria dos nos registra.\",\n    \"origem\": \"consenso_raft.txt\"\n  }\n]"
+        },
+        "url": { "raw": "{{baseUrl}}/indexar", "host": ["{{baseUrl}}"], "path": ["indexar"] },
+        "description": "Prova a mensageria: o POST nao indexa, so enfileira. Guarda o id em {{tarefa_id}}."
+      }
+    },
+    {
+      "name": "4. acompanhar a tarefa na fila",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('tarefa encontrada', function () { pm.response.to.have.status(200); });",
+              "const estado = pm.response.json().status;",
+              "console.log('status da tarefa: ' + estado);",
+              "pm.test('estado valido do ciclo de vida', function () {",
+              "    pm.expect(['na_fila', 'processando', 'pronto', 'retentando', 'erro']).to.include(estado);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/tarefa/{{tarefa_id}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["tarefa", "{{tarefa_id}}"]
+        },
+        "description": "na_fila -> processando -> pronto. Rode de novo se ainda nao estiver pronto: o worker e outro processo."
+      }
+    },
+    {
+      "name": "5. perguntar (resposta fundamentada)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('resposta 200', function () { pm.response.to.have.status(200); });",
+              "const corpo = pm.response.json();",
+              "pm.test('a resposta cita as fontes', function () {",
+              "    pm.expect(corpo.fontes).to.be.an('array').that.is.not.empty;",
+              "});",
+              "pm.test('traz o id do rastro', function () {",
+              "    pm.expect(corpo.trace_id).to.be.a('string').and.not.empty;",
+              "});",
+              "console.log('fontes: ' + corpo.fontes.map(function (f) { return f.origem; }).join(', '));",
+              "console.log('avaliacao: ' + corpo.avaliacao.veredito);",
+              "console.log('trace_id: ' + corpo.trace_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"pergunta\": \"o que diz o teorema CAP?\",\n  \"top_k\": 3\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/perguntar", "host": ["{{baseUrl}}"], "path": ["perguntar"] },
+        "description": "O fluxo completo: gateway -> inferencia -> recuperacao -> ingestao -> LLM. Veja fontes, avaliacao automatica e trace_id no console do Postman."
+      }
+    },
+    {
+      "name": "6. quota (nao consome requisicao)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('informa a cota', function () {",
+              "    pm.response.to.have.status(200);",
+              "    pm.expect(pm.response.json()).to.have.property('restantes');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": { "raw": "{{baseUrl}}/quota", "host": ["{{baseUrl}}"], "path": ["quota"] },
+        "description": "Consulta o contador do limite de uso sem gastar uma requisicao."
+      }
+    },
+    {
+      "name": "7. saude (publica, sem token)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('saude responde sem token', function () { pm.response.to.have.status(200); });",
+              "const corpo = pm.response.json();",
+              "pm.test('mostra os servicos internos', function () {",
+              "    pm.expect(corpo.servicos).to.have.property('ingestao');",
+              "    pm.expect(corpo.servicos).to.have.property('inferencia');",
+              "});",
+              "console.log('disjuntores: ' + JSON.stringify(corpo.disjuntores));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "GET",
+        "url": { "raw": "{{baseUrl}}/saude", "host": ["{{baseUrl}}"], "path": ["saude"] },
+        "description": "Saude da plataforma inteira vista da porta de entrada, com o estado dos dois disjuntores."
+      }
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  }
+}
