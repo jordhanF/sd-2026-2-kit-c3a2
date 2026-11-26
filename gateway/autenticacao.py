@@ -23,7 +23,6 @@ import os
 import time
 
 import jwt
-from fastapi import HTTPException
 
 from comum.log import configurar
 
@@ -86,6 +85,11 @@ def emitir(usuario: str) -> tuple[str, int]:
 
 def validar(token: str) -> str:
     """Devolve o dono do token ou levanta 401 com o motivo exato."""
+    # Importado aqui dentro, e nao no topo, para que gerar_hash() rode com a
+    # biblioteca padrao e nada mais: o roteiro de deploy gera o hash da senha
+    # ANTES de existir qualquer dependencia instalada na maquina.
+    from fastapi import HTTPException
+
     try:
         carga = jwt.decode(token, SEGREDO, algorithms=[ALGORITMO], issuer=EMISSOR)
     except jwt.ExpiredSignatureError:
