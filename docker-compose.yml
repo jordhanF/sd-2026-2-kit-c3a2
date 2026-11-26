@@ -44,7 +44,7 @@ services:
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
-      - "${BIND_LOCAL:-127.0.0.1}:16686:16686"   # interface web
+      - "${BIND_LOCAL:-127.0.0.1}:${PORTA_JAEGER:-16686}:16686"   # interface web
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:14269/"]
       interval: 15s
@@ -119,7 +119,7 @@ services:
       dockerfile: gateway/Dockerfile
     restart: unless-stopped
     ports:
-      - "${BIND_LOCAL:-127.0.0.1}:8000:8000"
+      - "${BIND_LOCAL:-127.0.0.1}:${PORTA_GATEWAY:-8000}:8000"
     environment:
       <<: *ambiente-comum
       URL_INGESTAO: http://ingestao:8001
