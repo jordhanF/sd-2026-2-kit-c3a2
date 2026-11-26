@@ -1,0 +1,42 @@
+# Borda HTTPS da plataforma - TAREFA 8.
+#
+# O compose publica o gateway em 127.0.0.1:8000. Quem atravessa a internet e
+# este bloco: termina o TLS, repassa para o gateway e nada mais do sistema fica
+# alcancavel de fora.
+#
+# Instalar em /etc/nginx/sites-available/plataforma-ia e habilitar com:
+#   sudo ln -s /etc/nginx/sites-available/plataforma-ia /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# O certificado e emitido depois, pelo certbot, que reescreve este arquivo
+# acrescentando o bloco 443 (ver deploy/INSTRUCOES.md).
+
+server {
+    listen 80;
+    listen [::]:80;
+
+    # NUNCA marque default_server aqui se a maquina ja serve outros sites: dois
+    # default_server na mesma porta fazem o nginx recusar a configuracao, e um
+    # dominio sem bloco proprio aterrissa silenciosamente no site errado.
+    server_name 168-75-70-16.sslip.io;
+
+    # Corpo de requisicao modesto: a plataforma recebe texto, nao arquivo.
+    client_max_body_size 1m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # A resposta do LLM pode demorar; o padrao de 60s cortaria a conexao
+        # antes do tempo-limite da propria aplicacao e o cliente veria 504 em
+        # vez da mensagem de indisponibilidade que o gateway sabe dar.
+        proxy_connect_timeout 10s;
+        proxy_read_timeout    90s;
+        proxy_send_timeout    90s;
+    }
+}

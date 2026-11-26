@@ -1,0 +1,66 @@
+# Integracao continua - extensao opcional do edital.
+#
+# Roda numa maquina limpa: sem .env, sem Redis, sem nada do ambiente de quem
+# escreveu o codigo. Se a suite depende de algo que so existe no meu laptop,
+# ela quebra aqui - e nao na hora da correcao.
+name: testes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  suite:
+    name: suite de testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements-dev.txt
+
+      - name: Rodar a suite
+        run: python -m pytest testes -q
+
+  imagens:
+    name: as cinco imagens compilam
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # O compose valida os cinco Dockerfiles de uma vez. Falha aqui significa
+      # que o deploy falharia depois - e melhor descobrir no push.
+      - name: Montar as imagens
+        run: |
+          cp .env.example .env
+          docker compose build
+
+  conformidade:
+    name: nada de segredo no repositorio
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Procurar segredo embutido no codigo
+        run: |
+          set -e
+          if grep -rnE "(sk-[A-Za-z0-9]{20,}|JWT_SEGREDO *= *[\"'][^\"']{8,})" \
+             --include="*.py" --include="*.yml" --include="*.yaml" . ; then
+            echo "::error::segredo embutido no codigo"
+            exit 1
+          fi
+          echo "nenhum segredo embutido"
+
+      - name: O .env nao pode estar versionado
+        run: |
+          if git ls-files --error-unmatch .env 2>/dev/null; then
+            echo "::error::.env versionado"
+            exit 1
+          fi
+          echo ".env fora do repositorio"

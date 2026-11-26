@@ -1,0 +1,10 @@
+# Fim de linha normalizado no repositorio.
+#
+# Sem isto, editar um arquivo por script no Windows o regrava em CRLF e ele
+# aparece como "modificado" inteiro no diff - inclusive arquivos do kit que eu
+# nao toquei. Um diff assim engana quem revisa e esconde a mudanca de verdade
+# no meio de centenas de linhas que so mudaram de invisivel.
+* text=auto eol=lf
+
+# Scripts de shell PRECISAM de LF: o bash do Linux quebra com CRLF no shebang.
+*.sh text eol=lf
