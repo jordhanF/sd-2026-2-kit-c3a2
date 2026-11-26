@@ -7,6 +7,10 @@ Prof. M.Sc. Howard Cruz Roatti · Aluno: Jordhan ([@jordhanF](https://github.com
 
 ### 🌐 No ar em **https://168-75-70-16.sslip.io**
 
+**Credenciais de avaliação:** usuário `avaliador` · senha `avaliacao-c3a2`
+Teste direto no navegador em **[/docs](https://168-75-70-16.sslip.io/docs)** — clique em
+*Authorize*, cole o token emitido por `POST /login` e dispare qualquer rota.
+
 Um serviço de perguntas e respostas sobre documentos próprios (RAG), publicado como
 **plataforma**: sete processos em containers, uma porta de entrada autenticada, fila entre
 a escrita e o trabalho pesado, rastreamento que atravessa a fila e HTTPS na borda.
@@ -141,9 +145,112 @@ curl -s $API/quota -H "Authorization: Bearer $TOKEN"
 curl -s $API/saude
 ```
 
-**Credenciais para avaliação:** usuário `avaliador`, senha enviada junto com o link no AVA.
-A senha não está no repositório — no servidor existe só o **hash PBKDF2** dela, em variável
-de ambiente.
+**Credenciais para avaliação:** usuário `avaliador`, senha `avaliacao-c3a2`.
+
+São credenciais de **demonstração**, publicadas de propósito para que a avaliação não
+dependa de combinar senha por outro canal. O que as torna aceitáveis aqui: a plataforma não
+guarda dado pessoal, o LLM roda em modo simulado (custo zero), a cota de 30 requisições por
+minuto limita abuso e a senha é trocável em um comando. No servidor existe apenas o **hash
+PBKDF2** dela — nem o repositório nem o servidor guardam a senha em claro.
+
+---
+
+---
+
+## Roteiro de avaliação
+
+Cada item do edital pode ser verificado em poucos minutos, sem instalar nada além de um
+navegador.
+
+> **Credenciais de demonstração:** usuário `avaliador`, senha no topo deste README (bloco
+> "No ar em"). São credenciais de avaliação, com cota de 30 requisições por minuto; os
+> únicos dados da plataforma são os documentos de teste da disciplina.
+
+### 1. A plataforma está no ar? (execução)
+
+Abra <https://168-75-70-16.sslip.io>. A página lista as rotas. O cadeado do navegador
+confirma o HTTPS; `http://` redireciona para `https://` com 301.
+
+### 2. Testar tudo pelo navegador (comunicação)
+
+Abra <https://168-75-70-16.sslip.io/docs> — documentação interativa OpenAPI.
+
+| Passo | O que fazer | O que confirma |
+|---|---|---|
+| a | `POST /perguntar` → **Try it out** → **Execute**, ainda **sem** autorizar | **401** — o gateway fecha a porta |
+| b | `POST /login` → Try it out → usuário e senha → Execute | token JWT emitido |
+| c | Botão **Authorize** (topo) → cole o token → Authorize | sessão no navegador |
+| d | `POST /perguntar` com `{"pergunta":"o que diz o teorema CAP?"}` | resposta **fundamentada**, com `fontes` e `trace_id` |
+| e | `POST /indexar` com um documento | **202** e um `id` — entrou na fila, não foi processado na requisição |
+| f | `GET /tarefa/{id}` com aquele `id` | `na_fila` → `processando` → `pronto` — a fila andou |
+| g | `GET /quota` | quanto resta da cota do seu token |
+| h | repita `POST /perguntar` umas 31 vezes | **429** com cabeçalho `Retry-After` — o limite por cliente funciona |
+| i | `GET /saude` (não precisa de token) | saúde dos serviços internos e estado dos dois disjuntores |
+
+### 3. Verificação automática de ponta a ponta
+
+Exercita as nove etapas acima em sequência e falha com código diferente de zero se alguma
+quebrar:
+
+```bash
+git clone https://github.com/jordhanF/sd-2026-2-kit-c3a2.git && cd sd-2026-2-kit-c3a2
+pip install requests
+
+API=https://168-75-70-16.sslip.io USUARIO=avaliador SENHA=<senha do topo> \
+  python exemplos/fluxo_completo.py
+```
+
+Saída esperada:
+
+```
+[ok ] rota protegida recusa sem token - HTTP 401
+[ok ] saude responde sem token - ok
+[ok ] login emite token - HTTP 200
+[ok ] senha errada e recusada
+[ok ] indexar responde 202 (entra na fila) - HTTP 202
+[ok ] worker processou a tarefa - status=pronto
+[ok ] pergunta: o que diz o teorema CAP? - 81ms · fontes=['teorema_cap.txt'] · trace=afa96b31...
+[ok ] cota e informada - 10/30 usadas
+
+FLUXO COMPLETO OK
+```
+
+### 4. Resiliência — ver o disjuntor abrir
+
+Na máquina publicada, derrubando um serviço interno:
+
+```bash
+docker compose stop inferencia     # depois: docker compose start inferencia
+```
+
+As três primeiras chamadas pagam o tempo-limite (~553 ms cada) e a terceira **abre** o
+circuito; da quarta em diante a recusa é imediata (~42 ms) e o corpo do 503 passa a dizer
+`disjuntor aberto`. Passada a janela de 20 s com o serviço de volta, uma chamada de teste
+fecha o circuito. Os números estão em [Medições](#medições).
+
+### 5. Observabilidade — ver o rastro atravessar a fila
+
+```bash
+ssh -L 16686:127.0.0.1:16686 ubuntu@168.75.70.16
+# navegador: http://localhost:16686  →  serviço "gateway"  →  um trace de POST /indexar
+```
+
+No trace aparecem, sob o **mesmo `trace_id`**: o gateway contando a cota (`INCRBY`), a
+ingestão publicando na fila (`RPUSH`) e o **worker** processando — em outro container e
+segundos depois. A interface não é pública de propósito; o acesso é por túnel SSH.
+
+### 6. Reprodutibilidade — subir do zero na sua máquina
+
+Os três comandos da seção seguinte. Sem chave de LLM, a plataforma roda offline em modo
+simulado. Foi assim que a entrega foi validada: clone limpo numa máquina que nunca tinha
+visto o código, um comando, e o verificador do passo 3 passando.
+
+### 7. A suíte
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest testes -q          # 82 testes
+```
 
 ---
 
@@ -477,6 +584,7 @@ Recuperação, inferência e gateway não tocam o disco — falam HTTP.
 │   ├── fila.py       fila, trava de escritor único e descarte
 │   ├── repositorio.py  persistência atômica do índice
 │   └── ...           ranking, retentativa, disjuntor, avaliação, log
+├── exemplos/         fluxo_completo.py: verificação de ponta a ponta
 ├── testes/           82 testes, offline, sem servidor
 ├── deploy/           instruções de publicação e vhost do nginx
 ├── documentos/       base de teste
