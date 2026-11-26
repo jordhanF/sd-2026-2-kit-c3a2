@@ -9,6 +9,7 @@ Chaves usadas:
   indexacao       (lista)  fila de trabalho, consumida com BLPOP
   descarte        (lista)  dead-letter: tarefas que esgotaram as tentativas
   tarefa:<id>     (string) status da tarefa, com TTL
+  ratelimit:<cliente>:<janela>  (contador) limite de requisicoes do gateway
   trava:indice    (string) lock de escritor unico do indice
 """
 import json
@@ -18,6 +19,8 @@ import uuid
 from contextlib import contextmanager
 
 import redis
+
+from comum.tracing import injetar_contexto
 
 URL_REDIS = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 FILA = os.getenv("FILA_INDEXACAO", "indexacao")
@@ -51,7 +54,11 @@ class Fila:
         """Enfileira um lote e devolve o id da tarefa."""
         identificador = uuid.uuid4().hex[:12]
         tarefa = {"id": identificador, "documentos": documentos, "tentativas": 0,
-                  "criada_em": time.time()}
+                  "criada_em": time.time(),
+                  # O contexto de rastreamento viaja DENTRO da tarefa: a fila
+                  # quebra a propagacao automatica do HTTP (quem consome e outro
+                  # processo, depois), e sem isto o trace morre aqui.
+                  "trace": injetar_contexto()}
         self.definir_status(identificador, status="na_fila",
                             documentos=len(documentos), tentativas=0)
         self.redis.rpush(FILA, json.dumps(tarefa))
