@@ -34,7 +34,7 @@ VALIDADE = int(os.getenv("JWT_VALIDADE_SEGUNDOS", "3600"))
 EMISSOR = os.getenv("JWT_EMISSOR", "plataforma-ia")
 
 USUARIO = os.getenv("API_USUARIO", "aluno")
-SENHA_HASH = os.getenv("API_SENHA_HASH", "")       # pbkdf2_sha256$<iteracoes>$<sal>$<hash>
+SENHA_HASH = os.getenv("API_SENHA_HASH", "")       # pbkdf2_sha256:<iteracoes>:<sal>:<hash>
 SENHA_SIMPLES = os.getenv("API_SENHA", "")          # so para desenvolvimento
 ITERACOES = 240_000
 
@@ -49,8 +49,12 @@ def gerar_hash(senha: str, sal: bytes | None = None) -> str:
     """
     sal = sal or os.urandom(16)
     bruto = hashlib.pbkdf2_hmac("sha256", senha.encode(), sal, ITERACOES)
-    return (f"pbkdf2_sha256${ITERACOES}${base64.b64encode(sal).decode()}"
-            f"${base64.b64encode(bruto).decode()}")
+    # Separador ':' e nao '$', que e o convencional: este valor vai para o .env
+    # lido pelo docker compose, que INTERPOLA cifrao - "pbkdf2_sha256$240000"
+    # viraria "pbkdf2_sha256" com a variavel vazia, e o hash chegaria mutilado
+    # ao container. Base64 nunca gera ':', entao a divisao continua sem ambiguidade.
+    return (f"pbkdf2_sha256:{ITERACOES}:{base64.b64encode(sal).decode()}"
+            f":{base64.b64encode(bruto).decode()}")
 
 
 def conferir_senha(usuario: str, senha: str) -> bool:
@@ -60,7 +64,7 @@ def conferir_senha(usuario: str, senha: str) -> bool:
 
     if SENHA_HASH:
         try:
-            _algoritmo, iteracoes, sal_b64, hash_b64 = SENHA_HASH.split("$")
+            _algoritmo, iteracoes, sal_b64, hash_b64 = SENHA_HASH.split(":")
             bruto = hashlib.pbkdf2_hmac("sha256", senha.encode(),
                                         base64.b64decode(sal_b64), int(iteracoes))
             return hmac.compare_digest(bruto, base64.b64decode(hash_b64))

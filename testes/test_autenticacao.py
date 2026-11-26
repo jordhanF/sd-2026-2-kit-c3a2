@@ -39,7 +39,12 @@ def test_hash_nunca_guarda_a_senha(auth):
     """O valor que vai para o ambiente nao pode conter a senha."""
     valor = auth.gerar_hash("senha-boa")
     assert "senha-boa" not in valor
-    assert valor.startswith("pbkdf2_sha256$")
+    assert valor.startswith("pbkdf2_sha256:")
+
+
+def test_hash_nao_usa_cifrao(auth):
+    """O valor vai para um .env lido pelo docker compose, que interpola $."""
+    assert "$" not in auth.gerar_hash("qualquer-senha")
 
 
 def test_mesmo_texto_gera_hashes_diferentes(auth):

@@ -7,6 +7,11 @@ requests==2.32.3
 redis==5.0.8
 python-dotenv==1.0.1
 
+# A imagem python:3.12-slim NAO traz setuptools, e a instrumentacao 0.48b0 do
+# OpenTelemetry ainda importa pkg_resources. Num venv local isso passa batido
+# (venv instala setuptools) e so aparece no container - como apareceu.
+setuptools==75.6.0
+
 # Rastreamento distribuido (TAREFA 7). A versao 1.27.0 do SDK casa com a
 # 0.48b0 das instrumentacoes - o par e obrigatorio, versoes cruzadas quebram.
 opentelemetry-sdk==1.27.0

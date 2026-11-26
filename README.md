@@ -1,118 +1,410 @@
-# Kit de Partida — C3.A2: Plataforma de IA como Serviço (projeto integrador)
+# C3.A2 — Plataforma de IA como Serviço
 
 **Sistemas Distribuídos e Computação em Nuvem · FAESA · 2026/2**
-Prof. Howard Cruz Roatti · Lançado na Aula 13 (05/11) · Entrega na Aula 17 (26/11)
+Prof. M.Sc. Howard Cruz Roatti · Aluno: Jordhan ([@jordhanF](https://github.com/jordhanF))
+
+[![testes](https://github.com/jordhanF/sd-2026-2-kit-c3a2/actions/workflows/testes.yml/badge.svg)](https://github.com/jordhanF/sd-2026-2-kit-c3a2/actions/workflows/testes.yml)
+
+### 🌐 No ar em **https://168-75-70-16.sslip.io**
+
+Um serviço de perguntas e respostas sobre documentos próprios (RAG), publicado como
+**plataforma**: sete processos em containers, uma porta de entrada autenticada, fila entre
+a escrita e o trabalho pesado, rastreamento que atravessa a fila e HTTPS na borda.
+
+A IA é a **carga de trabalho**, não o objeto: o vetorizador é o TF-IDF do kit e o cliente de
+LLM tem modo simulado. O que este repositório tenta fazer bem é a engenharia distribuída em
+volta disso.
+
+> Projeto integrador: o núcleo de recuperação e geração vem da minha entrega
+> [C2.A2](https://github.com/jordhanF/sd-2026-2-kit-c2a2); o que é novo aqui é o gateway,
+> a conteinerização por serviço, o rastreamento distribuído, a segurança e o deploy.
+> Este repositório é um **fork do kit do professor** — o primeiro commit do histórico é o
+> dele.
 
 ---
 
-## O que é isto
+## A arquitetura
 
-O projeto que fecha o semestre. Você pega tudo o que construiu e transforma numa
-plataforma de verdade: **conteinerizada, publicada na internet, observável e protegida**.
-Ao final você terá um sistema distribuído completo e público — material de portfólio
-para entrevista de emprego.
+```mermaid
+flowchart LR
+    CL(["Cliente"]) -->|"HTTPS"| NG["nginx<br/>TLS + proxy"]
+    NG -->|"127.0.0.1:8000"| GW["GATEWAY<br/>JWT · cota · disjuntor"]
 
-> **Sobre a IA neste trabalho:** todo contato com inteligência artificial aqui é
-> **chamada de biblioteca ou de API**. Você **não vai treinar modelos** nem precisar de
-> matemática de aprendizado de máquina. O modelo já vem pronto e configurado.
-> A sua nota vem da **engenharia distribuída**: arquitetura, comunicação, resiliência e
-> execução reproduzível — a sofisticação do modelo **não pontua**.
+    GW ==>|"POST /perguntar"| INF["INFERÊNCIA<br/>:8003"]
+    INF -->|"POST /buscar"| REC["RECUPERAÇÃO<br/>:8002"]
+    REC -->|"vetor + índice"| ING["INGESTÃO<br/>:8001"]
+    INF -.->|"tempo-limite<br/>retentativa<br/>disjuntor"| LLM{{"LLM<br/>(simulado offline)"}}
 
----
+    GW ==>|"POST /indexar · 202"| ING
+    ING -->|"publica"| FILA[("Redis<br/>fila")]
+    FILA -->|"BLPOP"| WK["WORKER<br/>reindexa"]
+    WK -->|"escreve"| DISCO[("volume<br/>índice vetorial")]
+    DISCO -.->|"lê"| ING
+    GW -.->|"cota por cliente"| FILA
 
-## Como começar
-
-```bash
-# 1. Clone o kit e entre na pasta
-git clone https://github.com/howardroatti/sd-2026-2-kit-c3a2.git
-cd sd-2026-2-kit-c3a2
-
-# 2. Crie e ative o ambiente virtual
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# Linux/macOS:
-source .venv/bin/activate
-
-# 3. Instale as dependências
-pip install -r requirements.txt
+    GW -.->|"spans"| JG[("Jaeger")]
+    INF -.-> JG
+    WK -.-> JG
 ```
 
+### Os sete processos
+
+| Processo | Papel | Porta |
+|---|---|---|
+| **nginx** (host) | termina o TLS e é o único que fala com a internet | 443 |
+| **gateway** | porta de entrada: autentica, limita, roteia e protege | 8000 (só local) |
+| **inferência** | monta o prompt com o contexto e chama o LLM | interna |
+| **recuperação** | compara a pergunta com o índice e devolve os trechos | interna |
+| **ingestão** | dona do índice e do espaço vetorial; publica na fila | interna |
+| **worker** | revetoriza o corpus fora do caminho da requisição | — |
+| **redis** | fila de indexação e contador de cota | interna |
+| **jaeger** | coletor e interface do rastreamento | 16686 (só local) |
+
+Nenhum serviço interno é alcançável de fora. O compose publica **apenas o gateway**, e só
+em `127.0.0.1`; quem atravessa a borda é o nginx.
+
+### O fluxo da pergunta
+
+```mermaid
+sequenceDiagram
+    participant C as Cliente
+    participant G as Gateway
+    participant I as Inferência
+    participant R as Recuperação
+    participant A as Ingestão
+    participant L as LLM
+
+    C->>G: POST /perguntar + Bearer <token>
+    G->>G: valida JWT · conta cota no Redis
+    G->>I: POST /perguntar (disjuntor + tempo-limite)
+    I->>R: POST /buscar
+    R->>A: POST /vetorizar + GET /indice
+    A-->>R: vetor + índice (cache por versão)
+    R-->>I: top_k trechos com score e origem
+    I->>L: gerar(prompt)<br/>(disjuntor + tempo-limite + retentativa)
+    L-->>I: resposta
+    I-->>G: resposta + fontes + avaliação
+    G-->>C: 200 + trace_id + latência
+```
+
+### O fluxo da indexação (mensageria)
+
+```
+POST /indexar ─→ 202 Accepted {"id": "...", "trace_id": "..."}   (não espera indexar)
+                      │
+                      ├─→ fila 'indexacao' ─→ worker ─→ volume do índice
+                      │        (leva o traceparent dentro da tarefa)
+GET /tarefa/<id> ─────┘                          └─→ 3 falhas ─→ fila 'descarte'
+
+estados: na_fila → processando → pronto     |     retentando → erro
+```
+
+---
+
+## Usar a plataforma publicada
+
 ```bash
-# 4. Copie o arquivo de ambiente
+API=https://168-75-70-16.sslip.io
+
+# 1. sem token, a porta está fechada
+curl -s -o /dev/null -w "%{http_code}\n" -X POST $API/perguntar \
+  -H "Content-Type: application/json" -d '{"pergunta":"o que diz o teorema CAP?"}'
+# 401
+
+# 2. autenticar (credenciais do avaliador no final desta seção)
+TOKEN=$(curl -s -X POST $API/login -H "Content-Type: application/json" \
+  -d '{"usuario":"avaliador","senha":"<senha>"}' | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
+# 3. perguntar
+curl -s -X POST $API/perguntar -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"pergunta":"o que diz o teorema CAP?"}'
+
+# 4. indexar um documento novo (202: entra na fila)
+curl -s -X POST $API/indexar -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '[{"texto":"Raft confirma uma operacao quando a maioria registra.","origem":"aula11"}]'
+
+# 5. acompanhar a indexação
+curl -s $API/tarefa/<ID> -H "Authorization: Bearer $TOKEN"
+
+# 6. quanto resta da cota (não consome requisição)
+curl -s $API/quota -H "Authorization: Bearer $TOKEN"
+
+# 7. saúde da plataforma inteira (pública)
+curl -s $API/saude
+```
+
+**Credenciais para avaliação:** usuário `avaliador`, senha enviada junto com o link no AVA.
+A senha não está no repositório — no servidor existe só o **hash PBKDF2** dela, em variável
+de ambiente.
+
+---
+
+## Executar do zero, em um comando
+
+Pré-requisitos: **Docker** e **Docker Compose**. Mais nada — nem Python instalado.
+
+```bash
+git clone https://github.com/jordhanF/sd-2026-2-kit-c3a2.git
+cd sd-2026-2-kit-c3a2
 cp .env.example .env
 
-# 5. Suba a stack inteira com UM comando
-docker compose up --build
+docker compose up -d --build        # sobe os sete processos
+docker compose ps                   # confere
 
-# 6. Teste pelo gateway (nunca pelos serviços diretamente)
-curl http://localhost:8000/saude
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" -d '{"texto":"servico excelente"}'
+# usar (o .env de exemplo traz usuario aluno / senha troque-esta-senha)
+TOKEN=$(curl -s -X POST localhost:8000/login -H "Content-Type: application/json" \
+  -d '{"usuario":"aluno","senha":"troque-esta-senha"}' | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
 
-# 7. Publique na nuvem seguindo deploy/INSTRUCOES.md
+curl -s -X POST localhost:8000/indexar -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '[{"texto":"O teorema CAP trata de consistencia e disponibilidade.","origem":"aula10"}]'
+
+curl -s -X POST localhost:8000/perguntar -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"pergunta":"o que diz o teorema CAP?"}'
+```
+
+Sem `LLM_API_KEY` a plataforma funciona **offline**: o cliente de LLM entra em modo simulado
+e monta a resposta a partir dos trechos recuperados. Nenhuma chamada sai da máquina.
+
+### A suíte de testes
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest testes -q          # 79 testes, sem servidor e sem Redis de pé
 ```
 
 ---
 
-## Estrutura do projeto
+## Observabilidade
 
+Cada requisição vira um **trace** que atravessa os processos. O ponto difícil não é o HTTP —
+esse propaga sozinho — é a **fila**: a tarefa fica parada no Redis e quem a consome é outro
+processo, depois. Sem tratamento o rastro morreria no gateway e a indexação, que é a parte
+cara, ficaria invisível.
+
+A solução está em `comum/tracing.py` + `comum/fila.py`: o `traceparent` do padrão W3C é
+injetado **dentro da tarefa** e o worker reabre o span como filho de quem publicou
+(`SpanKind.CONSUMER`). O resultado é um trace único cobrindo **gateway → fila → worker**,
+que é exatamente o que o edital pede.
+
+```bash
+# a interface do Jaeger não é pública; o acesso é por túnel SSH
+ssh -L 16686:127.0.0.1:16686 ubuntu@168.75.70.16
+# depois, no navegador: http://localhost:16686
 ```
-sd-2026-2-kit-c3a2/
-├── gateway/
-│   ├── app.py              # TAREFAS 1 e 2 (JWT e rate limit)
-│   └── Dockerfile          # PRONTO - use de modelo
-├── inferencia/             # traga o seu C1.A2 para cá
-├── worker/                 # traga o seu worker para cá
-├── deploy/INSTRUCOES.md    # passo a passo do free tier
-├── Dockerfile.exemplo      # modelo para os demais serviços
-├── docker-compose.yml      # TAREFA 4
-└── TAREFAS.md              # <- comece por aqui
-```
+
+Toda resposta e **todo erro** carregam o `trace_id`. É o que liga uma reclamação concreta
+("deu 503 agora") ao rastro exato, sem caçar por horário no meio de todas as requisições.
 
 ---
 
-## O que você precisa fazer
+## Segurança
 
-Abra o arquivo **`TAREFAS.md`**: ele lista o núcleo obrigatório item a item, indicando
-o arquivo e a aula de referência de cada um.
-
----
-
-## Como você será avaliado
-
-| Critério | Pontos |
+| Camada | O que foi feito |
 |---|---|
-| Arquitetura e decomposição em serviços | 1,5 |
-| Comunicação funcionando (REST / gRPC / mensageria) | 1,5 |
-| Resiliência e tratamento de falhas | 1,0 |
-| Execução reproduzível (README, container, deploy) | 1,0 |
-| **Sofisticação do modelo de IA** | **não pontua** |
-| **Total** | **5,0** |
+| **Transporte** | HTTPS com certificado Let's Encrypt; o nginx redireciona 80 → 443 |
+| **Autenticação** | JWT HS256 com `exp` de 1 h, emitido em `/login`; rotas de uso exigem `Bearer` |
+| **Senha** | nunca em claro: o ambiente guarda o **hash PBKDF2-SHA256** com sal por senha |
+| **Comparação** | `hmac.compare_digest` — comparação que sai no primeiro byte diferente vaza, pelo tempo, quantos bytes estavam certos |
+| **Abuso** | cota por cliente e cota separada, por IP, no `/login` (impede varredura de senha) |
+| **Superfície** | só o gateway publica porta, e só em `127.0.0.1` |
+| **Container** | roda como usuário sem privilégio (uid 10001), não como root |
+| **Segredos** | só por variável de ambiente; `.env` fora do repositório; a CI falha se achar segredo embutido |
+| **Produção** | com `AMBIENTE=producao` o gateway **se recusa a subir** com o segredo de exemplo |
 
-**Entrega:** no seu repositório do GitHub, **sem apresentação oral**. Grupos livres.
-
----
-
-## Aulas de referência
-
-- **Aula 13** — Nuvem, containers e o primeiro deploy
-- **Aula 14** — Orquestração, serverless e borda
-- **Aula 15** — Observabilidade e rastreamento distribuído
-- **Aula 16** — Segurança, LGPD e revisão para o ENADE
+Uma armadilha que vale registrar: **o Docker escreve direto no `iptables` e passa por cima
+do UFW**. Publicar `8001:8001` num servidor com firewall fechado abriria o serviço de
+ingestão para a internet inteira sem aviso nenhum. Por isso a interface de publicação é
+uma variável (`BIND_LOCAL`), com `127.0.0.1` como padrão.
 
 ---
 
-## Dúvidas frequentes
+## Conformidade — LGPD
 
-**Preciso saber machine learning?** Não. O modelo já está pronto e você só chama uma função.
+| Dado tratado | Finalidade | Base legal | Retenção |
+|---|---|---|---|
+| **Usuário e senha** do cliente da API | autenticar quem usa a plataforma | execução de contrato (art. 7º, V) | enquanto a credencial existir; a senha nunca é armazenada, só o hash |
+| **Texto das perguntas** | produzir a resposta | execução de contrato | **não é persistido**: vive em memória durante a requisição |
+| **Documentos indexados** | formar a base de respostas | fornecido pelo próprio titular | até remoção do volume; é o único dado em disco |
+| **Identificador do cliente** (`sub` do token) | aplicar a cota de uso | legítimo interesse (art. 7º, IX) — proteger o serviço | 60 s (a chave do contador expira sozinha) |
+| **Logs de requisição** | operar e diagnosticar | legítimo interesse | memória do container, rotacionados pelo Docker |
+| **Rastros (traces)** | diagnosticar latência e falha | legítimo interesse | memória do Jaeger; perdidos ao reiniciar |
 
-**E se eu não tiver internet no laboratório?** Tudo neste kit funciona offline. O modelo é
-treinado localmente e o cliente de LLM tem modo simulado.
+**O que deliberadamente NÃO é registrado:** o conteúdo das perguntas e das respostas não vai
+para o log nem para os atributos dos spans. O log guarda método, rota, status e duração; o
+span guarda identificadores e tamanhos. Foi uma decisão, não um acaso — registrar o texto
+seria a forma mais fácil de transformar diagnóstico em vazamento, já que uma pergunta pode
+conter dado pessoal que o usuário digitou sem pensar.
 
-**Posso trocar a linguagem?** O kit é em Python porque é o ecossistema usado nas aulas.
-Se quiser usar outra linguagem, converse com o professor antes.
+**Como verificar:**
 
-**Posso usar IA para me ajudar a programar?** Sim. Este é um trabalho prático feito fora de
-sala, e usar ferramentas de IA é realista. O que se avalia é o **sistema funcionando** e as
-**decisões de arquitetura** — que você precisa saber explicar.
+```bash
+docker compose logs gateway | grep -i "teorema\|pergunta" ; echo "(vazio = nenhum texto de pergunta no log)"
+```
+
+**Direitos do titular:** eliminação se faz removendo o documento do índice (reindexação do
+corpus) e o volume (`docker compose down -v`); como perguntas não são persistidas, não há o
+que eliminar delas. Não há compartilhamento com terceiros, exceto a API do LLM quando
+`LLM_API_KEY` está configurada — no modo padrão (simulado) **nada sai da máquina**.
+
+---
+
+## Relatório de trade-offs
+
+### CAP — e por que a resposta não é uma só
+
+A plataforma tem **dois estados** com escolhas opostas, de propósito.
+
+**O índice vetorial escolhe consistência (CP).** Reindexar é escrita no índice **inteiro**,
+porque o vocabulário do TF-IDF é global. Dois workers escrevendo juntos se sobrescreveriam e
+um lote desapareceria sem erro. Por isso há uma **trava de escritor único** no Redis: se a
+trava não está disponível, a tarefa volta para a fila — a indexação **para** em vez de
+corromper. Diante de uma partição entre worker e Redis, perde-se disponibilidade de escrita.
+
+**A leitura escolhe disponibilidade (AP).** O serviço de recuperação guarda o índice em
+cache, invalidado por versão. Se a ingestão oscilar, a leitura continua respondendo com a
+última versão conhecida — resposta levemente velha em vez de erro. Para um sistema de
+perguntas, responder com um índice de trinta segundos atrás é melhor do que não responder.
+
+**O contador de cota escolhe disponibilidade.** Se o Redis cai, o limite **abre**
+(fail-open): perder o teto de uso é menos grave do que recusar todos os clientes porque o
+contador caiu. A escolha oposta seria a certa se a cota existisse para proteger custo de
+terceiros — por exemplo, uma chave paga de LLM.
+
+**A fila é at-most-once, e isso é uma dívida.** `BLPOP` remove a tarefa antes de processá-la:
+worker morto no meio perde aquele lote. `BLMOVE` para uma lista de "em processamento", com
+devolução por tempo-limite, daria at-least-once — e, como indexar o mesmo documento duas
+vezes é inofensivo (a deduplicação por `(origem, texto)` já existe), seria a escolha certa.
+Não entrou por tempo.
+
+### Custo
+
+| Item | Custo mensal |
+|---|---|
+| VM Oracle Cloud **Always Free** (Ampere A1, 2 OCPU, 11 GiB) | R$ 0,00 |
+| Certificado TLS (Let's Encrypt) | R$ 0,00 |
+| Domínio (sslip.io resolve o IP embutido no nome) | R$ 0,00 |
+| LLM em modo simulado | R$ 0,00 |
+| **Total** | **R$ 0,00** |
+
+O custo real da plataforma só aparece quando `LLM_API_KEY` é configurada: aí cada pergunta
+vira uma chamada paga, e **a cota por cliente deixa de ser proteção de capacidade e vira
+proteção de orçamento** — o que mudaria a decisão do contador de fail-open para fail-closed.
+
+A escolha de VM em vez de PaaS (Render, Railway) também é de custo, só que de outro tipo: o
+free tier de PaaS roda **um container por serviço** e hiberna por inatividade. Publicar só o
+gateway esvaziaria o item do edital que pede o sistema inteiro subindo com um comando, e o
+avaliador que abrisse a URL depois de algumas horas encontraria a aplicação dormindo.
+
+### Latência
+
+| Caminho | Custo |
+|---|---|
+| `POST /perguntar` | 4 saltos de rede: gateway → inferência → recuperação → ingestão (duas vezes) |
+| `POST /indexar` | 1 salto; o trabalho pesado sai do caminho da requisição |
+| Falha com o circuito **fechado** | paga o tempo-limite inteiro |
+| Falha com o circuito **aberto** | recusa imediata |
+
+Três decisões de desenho atacam latência diretamente:
+
+1. **O 202 na indexação.** O custo de indexar cresce com o tamanho do índice, não com o do
+   lote: um documento novo num índice de 800 custa o mesmo que indexar os 800. Isso não cabe
+   dentro de um `POST`, então vai para a fila.
+2. **Cache do índice por versão.** A recuperação consulta `/indice/versao` (alguns bytes) e
+   só baixa o índice inteiro quando ele muda.
+3. **O disjuntor.** Quando a dependência está fora, falhar rápido vale mais do que insistir:
+   cada falha que paga o tempo-limite inteiro ocupa uma conexão e empilha latência no resto.
+
+O contrapeso: cada salto a mais é latência e um ponto a mais de falha. Um monólito
+responderia mais rápido. O que se compra com os saltos é poder escalar o worker sem tocar na
+API, trocar o LLM sem mexer na recuperação e falhar em pedaços em vez de inteiro.
+
+---
+
+## Decisões de projeto
+
+**Um contador de cota compartilhado, não em memória.** Contador em processo funciona com um
+gateway e mente com dois: subindo `--scale gateway=2`, cada réplica concederia a cota inteira
+e o limite real viraria o dobro do anunciado. Como o Redis já está lá para a fila, o estado
+compartilhado sai de graça — e o gateway continua sem estado, que é o que permite replicá-lo.
+
+**A cota é por dono do token, não por IP.** Vários clientes atrás do mesmo IP (escritório,
+celular em NAT) não disputam a mesma cota, e um token não escapa do limite trocando de rede.
+No `/login` é o contrário — ali ainda não há cliente identificado, então a cota é por IP.
+
+**Um disjuntor por destino.** Com um contador único, a inferência fora do ar cortaria também
+a indexação, que está saudável. Falhas diferentes precisam de contadores diferentes.
+
+**Erro de cliente não vira 503.** Um 404 do serviço interno é resposta legítima, não falha de
+infraestrutura: o gateway repassa o status e **não conta como falha no disjuntor**. Tratar
+4xx como indisponibilidade abriria o circuito por causa de quem digitou um id errado.
+
+**Retentativa por dentro do disjuntor.** Uma sequência esgotada de tentativas conta como
+**uma** falha. Se cada tentativa contasse, o circuito abriria no primeiro soluço de rede.
+
+**Imagens diferentes para serviços diferentes.** Gateway e inferência não instalam
+scikit-learn — o `normalizar` que os prendia à biblioteca científica saiu para
+`comum/texto.py`. São ~100 MB a menos em cada imagem e menos superfície para atualizar.
+
+**O contexto de build é a raiz do repositório.** A biblioteca `comum/` precisa entrar em
+cinco imagens e o Docker não copia de fora do contexto; cada serviço declara
+`dockerfile: <servico>/Dockerfile` com `context: .`.
+
+**O índice é montado só em quem precisa do arquivo.** Worker escreve, ingestão lê.
+Recuperação, inferência e gateway não tocam o disco — falam HTTP.
+
+---
+
+## Limitações conhecidas
+
+- **A fila é at-most-once** (ver trade-offs): worker morto no meio perde o lote.
+- **Reindexação é O(corpus)** a cada lote. Serve para a escala do trabalho; um banco vetorial
+  de verdade (FAISS, Qdrant) indexaria incrementalmente.
+- **Rastros em memória.** O Jaeger `all-in-one` perde tudo ao reiniciar. Em produção seria
+  um coletor com armazenamento persistente e amostragem.
+- **Um usuário só.** Não há cadastro, papéis nem revogação de token: o `exp` curto é a única
+  revogação. Uma lista de tokens revogados no Redis seria o próximo passo.
+- **Sem autoescalonamento automático.** O worker escala à mão (`--scale worker=3`); medir o
+  tamanho da fila e ajustar sozinho ficou como extensão não implementada.
+- **TF-IDF não entende sinônimo.** Pergunta que não repete nenhuma palavra do documento não
+  recupera nada.
+
+---
+
+## O edital, item por item
+
+| Item | Onde está |
+|---|---|
+| Gateway + inferência + worker + armazenamento vetorial | `gateway/`, `inferencia/`, `worker/`, `ingestao/` |
+| Um Dockerfile por serviço | `gateway/Dockerfile` e os outros quatro |
+| Compose sobe tudo com um comando | `docker compose up -d --build` |
+| Deploy em nuvem free tier com URL pública | https://168-75-70-16.sslip.io (Oracle Always Free) |
+| Tempo-limite, retentativa e circuit breaker | `comum/retentativa.py`, `comum/circuit_breaker.py`, `gateway/app.py` |
+| Rastreamento cobrindo gateway, fila e worker | `comum/tracing.py` + `comum/fila.py` + `worker/indexador.py` |
+| JWT no gateway | `gateway/autenticacao.py` |
+| Rate limit | `gateway/limite.py` |
+| HTTPS no serviço publicado | `deploy/nginx.conf.exemplo` + Let's Encrypt |
+| Seção de conformidade (LGPD) | acima |
+| Relatório de trade-offs (CAP, custo, latência) | acima |
+| Extensão: CI/CD | `.github/workflows/testes.yml` |
+
+## Estrutura
+
+```
+├── gateway/          porta de entrada: JWT, cota, disjuntor, roteamento
+│   ├── app.py  autenticacao.py  limite.py  Dockerfile
+├── ingestao/         dona do índice e do espaço vetorial
+├── recuperacao/      busca por similaridade
+├── inferencia/       prompt + LLM + citação de fontes
+├── worker/           consumidor da fila de indexação
+├── comum/            biblioteca compartilhada pelas cinco imagens
+│   ├── tracing.py    rastreamento, inclusive a travessia da fila
+│   ├── fila.py       fila, trava de escritor único e descarte
+│   ├── repositorio.py  persistência atômica do índice
+│   └── ...           ranking, retentativa, disjuntor, avaliação, log
+├── testes/           79 testes, offline, sem servidor
+├── deploy/           instruções de publicação e vhost do nginx
+├── documentos/       base de teste
+└── docker-compose.yml
+```
