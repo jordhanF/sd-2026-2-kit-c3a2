@@ -23,7 +23,7 @@ MODO SIMULADO a fundamentacao e alta por construcao - a resposta e montada a
 partir do proprio contexto. O numero so comeca a dizer algo quando ha um LLM de
 verdade escrevendo. E alarme de fumaca barato, nao juiz.
 """
-from comum.ranking import normalizar
+from comum.texto import normalizar
 
 LIMITE_FUNDAMENTACAO = 0.5
 LIMITE_COBERTURA = 0.4

@@ -1,0 +1,7 @@
+# So para quem toca o indice vetorial: ingestao, recuperacao e worker.
+# O gateway e a inferencia NAO entram aqui - e o que mantem as duas imagens
+# sem o scikit-learn.
+-r requirements-comum.txt
+scikit-learn==1.5.2
+joblib==1.4.2
+numpy==2.1.1

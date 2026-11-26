@@ -5,9 +5,8 @@ O servico de recuperacao cuida do transporte (buscar o indice, pedir o vetor da
 pergunta). Toda a decisao de RELEVANCIA mora aqui, em funcoes puras que se testam
 sem subir servidor nenhum.
 """
-import unicodedata
-
 from comum.embeddings import similaridade
+from comum.texto import cobertura, normalizar  # noqa: F401  reexportados
 
 PESO_COBERTURA = 0.3
 
@@ -16,27 +15,6 @@ PESO_COBERTURA = 0.3
 # aparece na citacao de fontes com relevancia 0,0000, o que e pior que nao
 # aparecer - sugere fundamentacao que nao existe.
 SCORE_MINIMO = 0.0
-
-
-def normalizar(texto: str) -> set:
-    """Palavras em minuscula e sem acento.
-
-    Sem a remocao de acento, "consistencia" e "consistência" seriam termos
-    diferentes e a cobertura daria zero justamente nas perguntas bem escritas.
-    """
-    sem_acento = unicodedata.normalize("NFKD", texto.lower())
-    sem_acento = "".join(c for c in sem_acento if not unicodedata.combining(c))
-    return {palavra for palavra in
-            "".join(c if c.isalnum() else " " for c in sem_acento).split()
-            if len(palavra) > 2}
-
-
-def cobertura(pergunta: str, texto: str) -> float:
-    """Fracao dos termos da pergunta que aparecem no trecho (0 a 1)."""
-    termos = normalizar(pergunta)
-    if not termos:
-        return 0.0
-    return len(termos & normalizar(texto)) / len(termos)
 
 
 def buscar(vetor_pergunta: list, itens: list, top_k: int = 3,

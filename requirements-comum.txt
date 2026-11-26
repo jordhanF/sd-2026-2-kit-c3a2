@@ -1,0 +1,16 @@
+# Base comum a todos os servicos. Cada servico tem o seu requirements.txt, que
+# inclui este arquivo e acrescenta so o que aquele servico realmente usa.
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+requests==2.32.3
+redis==5.0.8
+python-dotenv==1.0.1
+
+# Rastreamento distribuido (TAREFA 7). A versao 1.27.0 do SDK casa com a
+# 0.48b0 das instrumentacoes - o par e obrigatorio, versoes cruzadas quebram.
+opentelemetry-sdk==1.27.0
+opentelemetry-exporter-otlp-proto-http==1.27.0
+opentelemetry-instrumentation-fastapi==0.48b0
+opentelemetry-instrumentation-requests==0.48b0
+opentelemetry-instrumentation-redis==0.48b0

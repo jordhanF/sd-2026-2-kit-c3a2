@@ -1,33 +1,143 @@
+# TAREFA 4 - a plataforma inteira em UM comando:
+#
+#     docker compose up -d --build
+#
+# Sete processos: a porta de entrada, tres servicos de dominio, o worker da
+# fila, o Redis e o coletor de rastros.
+#
+# SUPERFICIE EXPOSTA = UM SO SERVICO. Apenas o gateway publica porta, e so em
+# 127.0.0.1. Isso importa mais do que parece: o Docker escreve direto no iptables
+# e PASSA POR CIMA do UFW - publicar "8001:8001" num servidor com firewall
+# fechado abriria a ingestao para a internet inteira sem nenhum aviso. Quem
+# atravessa a borda e o nginx com HTTPS, e ele fala com 127.0.0.1:8000.
+#
+# Os servicos se acham pelo NOME (redis, ingestao, jaeger), nunca por IP fixo:
+# e a descoberta de servicos da rede do compose (Aula 14).
+name: plataforma-ia
+
+x-ambiente-comum: &ambiente-comum
+  REDIS_URL: redis://redis:6379/0
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+  AMBIENTE: ${AMBIENTE:-local}
+  LOG_NIVEL: ${LOG_NIVEL:-INFO}
+
 services:
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    restart: unless-stopped
+    # Sem "ports": o Redis so e alcancavel de dentro da rede do compose. Fila e
+    # contador de uso nao tem por que aparecer na internet.
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - fila:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Coletor e interface de rastreamento (TAREFA 7). Em producao a interface
+  # fica fechada; o acesso e por tunel SSH - ver deploy/INSTRUCOES.md.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${BIND_LOCAL:-127.0.0.1}:16686:16686"   # interface web
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:14269/"]
+      interval: 15s
+      timeout: 5s
       retries: 5
 
-  inferencia:
-    build: ./inferencia
+  # Armazenamento vetorial: dono do indice e do espaco vetorial.
+  ingestao:
+    build:
+      context: .
+      dockerfile: ingestao/Dockerfile
+    restart: unless-stopped
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      <<: *ambiente-comum
+      CAMINHO_DADOS: /app/dados
+      OTEL_SERVICE_NAME: ingestao
+    volumes:
+      - indice:/app/dados
     depends_on:
       redis: {condition: service_healthy}
 
+  # O trabalho caro (revetorizar o corpus) roda aqui, fora do caminho da
+  # requisicao. Pode ser replicado: docker compose up -d --scale worker=3
   worker:
-    build: ./worker
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    restart: unless-stopped
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      <<: *ambiente-comum
+      CAMINHO_DADOS: /app/dados
+      OTEL_SERVICE_NAME: worker
+    volumes:
+      - indice:/app/dados
     depends_on:
       redis: {condition: service_healthy}
+
+  recuperacao:
+    build:
+      context: .
+      dockerfile: recuperacao/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *ambiente-comum
+      URL_INGESTAO: http://ingestao:8001
+      OTEL_SERVICE_NAME: recuperacao
+    depends_on:
+      ingestao: {condition: service_healthy}
+
+  inferencia:
+    build:
+      context: .
+      dockerfile: inferencia/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *ambiente-comum
+      URL_RECUPERACAO: http://recuperacao:8002
+      OTEL_SERVICE_NAME: inferencia
+      # A chave NUNCA vai no codigo nem aqui: entra pelo ambiente. Vazia = modo
+      # simulado, que mantem a plataforma de pe sem internet.
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_API_URL: ${LLM_API_URL:-https://api.openai.com/v1/chat/completions}
+      LLM_MODELO: ${LLM_MODELO:-gpt-4o-mini}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-20}
+      TENTATIVAS_LLM: ${TENTATIVAS_LLM:-3}
+    depends_on:
+      recuperacao: {condition: service_healthy}
 
   gateway:
-    build: ./gateway
-    ports: ["8000:8000"]
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${BIND_LOCAL:-127.0.0.1}:8000:8000"
     environment:
-      - URL_INFERENCIA=http://inferencia:8001
-      - JWT_SEGREDO=${JWT_SEGREDO:-troque-este-segredo}
-    depends_on: [inferencia]
+      <<: *ambiente-comum
+      URL_INGESTAO: http://ingestao:8001
+      URL_INFERENCIA: http://inferencia:8003
+      OTEL_SERVICE_NAME: gateway
+      JWT_SEGREDO: ${JWT_SEGREDO:?defina JWT_SEGREDO no .env}
+      JWT_VALIDADE_SEGUNDOS: ${JWT_VALIDADE_SEGUNDOS:-3600}
+      API_USUARIO: ${API_USUARIO:-aluno}
+      API_SENHA_HASH: ${API_SENHA_HASH:-}
+      API_SENHA: ${API_SENHA:-}
+      LIMITE_POR_MINUTO: ${LIMITE_POR_MINUTO:-30}
+      LIMITE_LOGIN_POR_MINUTO: ${LIMITE_LOGIN_POR_MINUTO:-5}
+    depends_on:
+      ingestao: {condition: service_healthy}
+      inferencia: {condition: service_healthy}
 
-# Observe: os servicos se referenciam pelo NOME (inferencia, redis),
-# nunca por IP fixo. Isso e descoberta de servicos. (Aula 14)
+volumes:
+  # O indice e montado SO em quem precisa do arquivo: o worker escreve e a
+  # ingestao le. Recuperacao, inferencia e gateway nao tocam o disco.
+  indice:
+  fila:
