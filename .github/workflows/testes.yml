@@ -47,15 +47,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Procurar segredo embutido no codigo
+      # Chave de provedor e chave de provedor em qualquer lugar - inclusive
+      # num teste. Esta varredura nao abre excecao para ninguem.
+      - name: Nenhuma chave de API no repositorio
         run: |
-          set -e
-          if grep -rnE "(sk-[A-Za-z0-9]{20,}|JWT_SEGREDO *= *[\"'][^\"']{8,})" \
-             --include="*.py" --include="*.yml" --include="*.yaml" . ; then
-            echo "::error::segredo embutido no codigo"
+          if grep -rnE "(sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})"              --include="*.py" --include="*.yml" --include="*.yaml"              --include="*.md" --include="*.txt" . ; then
+            echo "::error::chave de API no repositorio"
             exit 1
           fi
-          echo "nenhum segredo embutido"
+          echo "nenhuma chave de API"
+
+      # Ja segredo de assinatura embutido so e problema no codigo que RODA.
+      # Em testes/ o valor falso e proposital: e o que permite verificar que um
+      # token assinado com outro segredo e recusado.
+      - name: Nenhum segredo de assinatura fixo no codigo de producao
+        run: |
+          if grep -rnE "(JWT_SEGREDO|SEGREDO) *= *[\"'][^\"']{8,}"              --include="*.py" --include="*.yml" --include="*.yaml"              --exclude-dir=testes . ; then
+            echo "::error::segredo de assinatura embutido no codigo de producao"
+            exit 1
+          fi
+          echo "nenhum segredo embutido no codigo de producao"
 
       - name: O .env nao pode estar versionado
         run: |
