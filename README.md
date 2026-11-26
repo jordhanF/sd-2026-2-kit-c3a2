@@ -171,7 +171,7 @@ e monta a resposta a partir dos trechos recuperados. Nenhuma chamada sai da máq
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest testes -q          # 79 testes, sem servidor e sem Redis de pé
+python -m pytest testes -q          # 80 testes, sem servidor e sem Redis de pé
 ```
 
 ---
@@ -322,6 +322,73 @@ API, trocar o LLM sem mexer na recuperação e falhar em pedaços em vez de inte
 
 ---
 
+## Medições
+
+Tudo abaixo foi medido **na plataforma publicada**, pela internet, com HTTPS.
+
+### Latência de uma pergunta (10 chamadas)
+
+| Medida | Valor |
+|---|---|
+| 1ª chamada | 60 ms |
+| Mediana | 61 ms |
+| Mais rápida | 59 ms |
+| Mais lenta | 63 ms |
+
+São quatro saltos internos (gateway → inferência → recuperação → ingestão, duas vezes) mais
+TLS e a travessia da internet, em 60 ms. O índice vem do cache enquanto a versão não muda —
+é o que impede que cada pergunta arraste todos os vetores pela rede.
+
+### O que o disjuntor compra (serviço de inferência derrubado em produção)
+
+```
+1. HTTP 503 em  556 ms   -> tentou, esperou o tempo-limite e falhou
+2. HTTP 503 em  553 ms   -> tentou e falhou
+3. HTTP 503 em  553 ms   -> tentou e falhou; o circuito ABRE
+4. HTTP 503 em   43 ms   -> recusado na hora, sem tentar
+5. HTTP 503 em   42 ms   -> recusado na hora, sem tentar
+
+(serviço religado, passada a janela de 20 s)
+   HTTP 200             -> uma chamada de teste passa e o circuito fecha
+```
+
+**13× mais rápido para falhar** depois que o circuito abre. Não é cosmético: cada falha que
+paga o tempo-limite inteiro segura uma conexão e empilha latência em todo o resto.
+
+### O rastro atravessando a fila
+
+Um trace real da plataforma publicada — **22 spans, 3 serviços, um só `trace_id`**:
+
+```
+gateway      POST /indexar                      10.4 ms
+gateway      INCRBY                              0.3 ms   <- cota do cliente, no Redis
+gateway      EXPIRE                              0.2 ms
+gateway      POST                                5.6 ms   <- chamada ao serviço de ingestão
+ingestao     POST /indexar                       4.0 ms
+ingestao     RPUSH                               0.4 ms   <- tarefa entra na FILA
+ingestao     POST /indexar http send             0.7 ms   <- 202 volta ao cliente
+...
+worker       worker indexar                      7.9 ms   <- OUTRO processo, depois
+worker       SET / GET / DEL                     0.2 ms
+```
+
+Duas coisas que esse rastro mostra e que um log não mostraria:
+
+1. **O span do worker está dentro do mesmo trace do `POST /indexar`**, embora tenha
+   acontecido em outro container, alguns segundos depois. É o `traceparent` viajando dentro
+   da tarefa.
+2. **A duração total do trace é ~3 s, mas o cliente foi respondido em 10 ms.** A diferença é
+   exatamente o tempo que a tarefa passou esperando na fila — o custo que a mensageria
+   assume para tirar o trabalho pesado do caminho da requisição.
+
+### Tamanho das imagens
+
+Separar `comum/texto.py` do módulo que importa scikit-learn tirou a biblioteca científica
+das imagens que não a usam: **gateway e inferência** instalam só o necessário, enquanto
+ingestão, recuperação e worker continuam com o vetorizador.
+
+---
+
 ## Decisões de projeto
 
 **Um contador de cota compartilhado, não em memória.** Contador em processo funciona com um
@@ -403,7 +470,7 @@ Recuperação, inferência e gateway não tocam o disco — falam HTTP.
 │   ├── fila.py       fila, trava de escritor único e descarte
 │   ├── repositorio.py  persistência atômica do índice
 │   └── ...           ranking, retentativa, disjuntor, avaliação, log
-├── testes/           79 testes, offline, sem servidor
+├── testes/           80 testes, offline, sem servidor
 ├── deploy/           instruções de publicação e vhost do nginx
 ├── documentos/       base de teste
 └── docker-compose.yml
